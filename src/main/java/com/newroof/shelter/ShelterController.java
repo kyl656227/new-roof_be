@@ -19,7 +19,7 @@ public class ShelterController {
     public ApiResponse<List<ShelterResponseDto>> getNearby(
             @RequestParam double lat,
             @RequestParam double lng,
-            @RequestParam(defaultValue = "2000") double radiusM) {
+            @RequestParam(defaultValue = "10000") double radiusM) {
         return ApiResponse.ok(shelterService.findNearby(lat, lng, radiusM));
     }
 

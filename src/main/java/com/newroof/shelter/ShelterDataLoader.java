@@ -1,5 +1,6 @@
 package com.newroof.shelter;
 
+import com.newroof.shelter.dto.ShelterApiResponse.Item;
 import com.newroof.shelter.entity.Shelter;
 import com.opencsv.CSVReader;
 import lombok.RequiredArgsConstructor;
@@ -20,13 +21,50 @@ import java.util.List;
 public class ShelterDataLoader implements ApplicationRunner {
 
     private final ShelterRepository shelterRepository;
+    private final ShelterApiClient shelterApiClient;
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
         if (shelterRepository.count() > 0) return;
 
-        List<Shelter> shelters = new ArrayList<>();
+        List<Shelter> shelters = loadFromApi();
+        if (shelters.isEmpty()) {
+            log.warn("API 조회 실패 또는 결과 없음, CSV 폴백 실행");
+            shelters = loadFromCsv();
+        }
 
+        shelterRepository.saveAll(shelters);
+        log.info("민방위 대피소 {}건 로드 완료", shelters.size());
+    }
+
+    private List<Shelter> loadFromApi() {
+        try {
+            List<Item> items = shelterApiClient.fetchAllItems();
+            List<Shelter> result = new ArrayList<>();
+            for (Item item : items) {
+                if (item.getLat() == null || item.getLot() == null) continue;
+                result.add(Shelter.builder()
+                        .fcltCd(item.getFcltCd())
+                        .name(item.getFcltNm())
+                        .address(item.getRonAdres())
+                        .lat(item.getLat())
+                        .lng(item.getLot())
+                        .capacity(item.getPrtcptnPsblCnt())
+                        .shelterType("2".equals(item.getGrndUdgd()) ? "지하" : "지상")
+                        .managerName(item.getMngNm())
+                        .managerPhone(item.getMngTelno())
+                        .build());
+            }
+            log.info("API에서 민방위 대피소 {}건 로드", result.size());
+            return result;
+        } catch (Exception e) {
+            log.error("API 로드 실패: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<Shelter> loadFromCsv() throws Exception {
+        List<Shelter> shelters = new ArrayList<>();
         var resource = new ClassPathResource("shelter.csv");
         try (var reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
             reader.readNext(); // 1행: 컬럼 코드명 skip
@@ -35,22 +73,15 @@ public class ShelterDataLoader implements ApplicationRunner {
             String[] row;
             while ((row = reader.readNext()) != null) {
                 try {
-                    String fcltCd    = row[2].trim();
-                    String name      = row[3].trim();
-                    String address   = row[11].trim();
-                    String lngDeg    = row[12].trim();
-                    String lngMin    = row[13].trim();
-                    String lngSec    = row[14].trim();
-                    String latDeg    = row[15].trim();
-                    String latMin    = row[16].trim();
-                    String latSec    = row[17].trim();
-                    String grndUdgd  = row[18].trim(); // 1=지상, 2=지하
-                    String capacity  = row[19].trim();
-                    String mngNm     = row[21].trim();
-                    String mngTel    = row[23].trim();
-
-                    double lat = toDecimal(latDeg, latMin, latSec);
-                    double lng = toDecimal(lngDeg, lngMin, lngSec);
+                    String fcltCd   = row[2].trim();
+                    String name     = row[3].trim();
+                    String address  = row[11].trim();
+                    double lat = toDecimal(row[15].trim(), row[16].trim(), row[17].trim());
+                    double lng = toDecimal(row[12].trim(), row[13].trim(), row[14].trim());
+                    String grndUdgd = row[18].trim();
+                    String capacity = row[19].trim();
+                    String mngNm    = row[21].trim();
+                    String mngTel   = row[23].trim();
 
                     if (lat == 0 || lng == 0) continue;
 
@@ -70,12 +101,9 @@ public class ShelterDataLoader implements ApplicationRunner {
                 }
             }
         }
-
-        shelterRepository.saveAll(shelters);
-        log.info("민방위 대피소 {}건 로드 완료", shelters.size());
+        return shelters;
     }
 
-    // 도분초 → 소수점 좌표 변환
     private double toDecimal(String deg, String min, String sec) {
         try {
             return Double.parseDouble(deg)
